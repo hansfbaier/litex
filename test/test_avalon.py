@@ -37,4 +37,4 @@ class TestAvalon2Wishbone(unittest.TestCase):
                 self.submodules += wishbone_mem
 
         dut = DUT()
-        run_simulation(dut, generator(dut)) # , vcd_name="avalon.vcd")
+        run_simulation(dut, generator(dut), vcd_name="avalon.vcd")

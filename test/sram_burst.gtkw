@@ -1,0 +1,35 @@
+[*]
+[*] GTKWave Analyzer v3.4.0 (w)1999-2022 BSI
+[*] Sat Apr 22 07:37:00 2023
+[*]
+[dumpfile] "sram_burst.vcd"
+[dumpfile_mtime] "Sat Apr 22 07:28:53 2023"
+[dumpfile_size] 5150
+[savefile] "sram_burst.gtkw"
+[timestart] 0
+[size] 2550 2822
+[pos] -1 -1
+*-4.319888 68 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+[sst_width] 296
+[signals_width] 198
+[sst_expanded] 1
+[sst_vpaned_height] 923
+@28
+DUT.sys_clk
+@29
+DUT.wb_bte[1:0]
+@28
+DUT.wb_cti[2:0]
+@22
+DUT.wb_adr[29:0]
+@28
+DUT.wb_cyc
+DUT.wb_stb
+DUT.wb_we
+DUT.wb_ack
+@22
+DUT.wb_dat_w[31:0]
+DUT.wb_dat_r[31:0]
+DUT.wb_sel[3:0]
+[pattern_trace] 1
+[pattern_trace] 0

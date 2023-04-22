@@ -75,7 +75,7 @@ class TestWishbone(unittest.TestCase):
                 self.submodules += wishbone_mem
 
         dut = DUT()
-        run_simulation(dut, generator(dut))
+        run_simulation(dut, generator(dut), vcd_name="sram_burst.vcd")
 
     def test_sram_burst_wrap(self):
         def generator(dut):
@@ -96,7 +96,7 @@ class TestWishbone(unittest.TestCase):
                 self.submodules += wishbone_mem
 
         dut = DUT()
-        run_simulation(dut, generator(dut))
+        run_simulation(dut, generator(dut), vcd_name="sram_burst_wrap.vcd")
 
     def test_sram_burst_constant(self):
         def generator(dut):
@@ -116,4 +116,4 @@ class TestWishbone(unittest.TestCase):
                 self.submodules += wishbone_mem
 
         dut = DUT()
-        run_simulation(dut, generator(dut))
+        run_simulation(dut, generator(dut), vcd_name="sram_burst_constant.vcd")

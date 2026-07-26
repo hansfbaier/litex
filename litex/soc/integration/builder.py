@@ -605,11 +605,10 @@ class Builder:
         if "run" not in kwargs:
             kwargs["run"] = self.compile_gateware
 
-        if "hierarchical" not in kwargs:
-            if self.hierarchical_keep_hierarchy:
-                kwargs["hierarchical"] = {"enabled": True, "keep_hierarchy": True}
-            else:
-                kwargs["hierarchical"] = self.hierarchical
+        if self.hierarchical_keep_hierarchy:
+            kwargs["hierarchical"] = {"enabled": True, "keep_hierarchy": True}
+        elif "hierarchical" not in kwargs:
+            kwargs["hierarchical"] = self.hierarchical
 
         kwargs["build_backend"] = self.build_backend
 

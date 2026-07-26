@@ -225,6 +225,31 @@ module names and instance names, producing duplicate declarations.
 
 ---
 
+## Issue 6: Shared-alias descendant ids drop inlined logic
+
+✅ **FIXED** (2026-07-27)
+
+**Symptom** (DECA UAC2 audio interface, `--hierarchical-verilog`): device enumerates
+(control endpoint + descriptors OK) but UAC2 class requests fail
+(`parse_audio_format_rates_v2v3(): unable to retrieve number of sample rates`) and no
+audio is produced.
+
+**Root cause**: `UAC2RequestHandlers` is registered twice — under `USBControlEndpoint`
+(via `add_request_handler`) and at SoC top level (`self.submodules.uac2_handlers`). The
+second registration becomes a *shared alias*, which copies the owner's
+`raw_desc_comb_ids`/`raw_desc_sync_ids`. When the whole chain (handler → control endpoint
+→ USBDevice) is inlined into the top module, the handler's statements legitimately arrive
+in the top's `inline_raw_*` via the inline chain — but `_lower_tree` subtracted the
+alias's (non-inline) descendant ids, deleting the handler's `StreamSerializer`
+(the response transmitter) from the netlist.
+
+**Fix**: `_set_inline_children` excludes shared aliases from `filter_children` — aliases
+are never emitted, so their ids must never filter anything.
+
+**Regression test**: `test_hierarchical_shared_alias_does_not_drop_inlined_logic`.
+
+---
+
 ## Test Plan
 
 ### Test 1: Clock aliasing — parent has matching domain (Priority 1)

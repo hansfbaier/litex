@@ -1267,7 +1267,13 @@ def _convert_hierarchical(f, ios, name, platform, special_overrides, attr_transl
             _set_hier_children(child)
 
     def _set_inline_children(node):
-        node.filter_children = [c for c in node.children if not getattr(c, "inline", False)]
+        # Shared aliases are excluded from filter_children: they are never
+        # emitted (the owner instance is), and their descendant statement ids
+        # are copies of the owner's. Subtracting those ids in _lower_tree
+        # would wrongly drop the owner's logic when it arrives via an inline
+        # chain from its real registration site.
+        node.filter_children = [c for c in node.children if not getattr(c, "inline", False)
+                                and not getattr(c, "shared_alias", False)]
         node.hier_children = [c for c in node.children if not getattr(c, "inline", False) and not getattr(c, "shared_alias", False)]
         node.inline_children = [c for c in node.children if getattr(c, "inline", False)]
         for child in node.children:

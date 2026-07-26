@@ -233,6 +233,50 @@ class _RenamedFIFOTop(Module):
         ]
 
 
+class _TwiceRegisteredSerializer(Module):
+    """Leaf with real logic, mimics StreamSerializer wrapped in a renamer."""
+    def __init__(self):
+        self.i = Signal(8, name="ser_i")
+        self.o = Signal(8, name="ser_o")
+        self.sync += self.o.eq(self.i)
+
+
+class _TwiceRegisteredHandler(Module):
+    """Handler whose transmitter child is added in do_finalize (like
+    liteusb's UAC2RequestHandlers)."""
+    def __init__(self):
+        self.claim = Signal(name="claim")
+
+    def do_finalize(self):
+        self.submodules.transmitter = ClockDomainsRenamer("usb")(
+            _TwiceRegisteredSerializer())
+        self.comb += self.claim.eq(self.transmitter.o[0])
+
+
+class _TwiceRegisteredControlEp(Module):
+    def __init__(self, handler):
+        self.inner = Signal(name="ctrl_inner")
+        self.submodules.H = handler
+        # Parent drives the same signal as the child: policy-1 inlines H.
+        self.comb += handler.claim.eq(1)
+
+
+class _TwiceRegisteredTop(Module):
+    """The same handler module registered under two parents (like liteusb's
+    add_request_handler + self.submodules.uac2_handlers): the second
+    registration becomes a shared alias. With the whole chain inlined into
+    the top (policy 1 then policy 2), the alias's descendant statement ids
+    must not filter out the handler logic arriving via the inline chain."""
+    def __init__(self):
+        self.o = Signal(name="o")
+        handler = _TwiceRegisteredHandler()
+        self.submodules.ctrl = _TwiceRegisteredControlEp(handler)
+        self.submodules.uac2_handlers = handler
+        # Drive a signal owned under ctrl: policy-2 inlines ctrl into top.
+        self.comb += self.ctrl.inner.eq(1)
+        self.comb += self.o.eq(0)
+
+
 class TestHierarchicalVerilog(unittest.TestCase):
     @staticmethod
     def _module_body(verilog, name):
@@ -572,3 +616,19 @@ class TestHierarchicalVerilog(unittest.TestCase):
                 self.assertNotIn(assign.group(1), inputs,
                     f"module {mod.group(1)} assigns to its own input port "
                     f"{assign.group(1)}")
+
+    def test_hierarchical_shared_alias_does_not_drop_inlined_logic(self):
+        # Regression test: a module registered under two parents (shared
+        # alias) whose first registration sits inside a subtree that gets
+        # inlined into the top. The alias is never emitted; its copied
+        # descendant statement ids must not filter the handler logic that
+        # legitimately arrives at the top via the inline chain. (Audio
+        # interface bug: UAC2RequestHandlers' StreamSerializer was dropped,
+        # the device enumerated but could not answer class requests.)
+        top = _TwiceRegisteredTop()
+        verilog = self._convert_hier(top, ios={top.o})
+
+        # The serializer's logic must be emitted somewhere in the netlist.
+        self.assertIn("ser_i", verilog)
+        self.assertIn("ser_o", verilog)
+        self.assertRegex(verilog, r"ser_o <= ser_i")

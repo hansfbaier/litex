@@ -1498,6 +1498,116 @@ def _convert_hierarchical(f, ios, name, platform, special_overrides, attr_transl
 
     _compute_ports(ctx.root)
 
+    def _generate_clock_reset_aliases(node):
+        """Emit clock/reset alias assignments for child submodule clock ports.
+
+        Children expose their clock domain clk/rst signals as input ports.
+        When such a port is not already tied to the parent's own net by the
+        port connection, emit an alias assign driven by (first match wins):
+
+        1) The parent's domain with the same name, after resolving
+           ClockDomainsRenamer mappings on this module and its ancestors
+           (e.g. write→usb inside an AsyncFIFO wrapped with
+           {"write": "usb", "read": "sys"}).
+        2) The canonical sibling signal for that domain (daisy-chain), when
+           the parent has no domain with that name.
+        3) Any parent clock domain (fallback), only when the parent has no
+           domain with that name at all.
+
+        No alias is emitted when the child's port IS the parent's own
+        clock/reset net (shared ClockDomain object): the port connection
+        already ties them and an alias would add a second driver to a net
+        the parent may already drive (e.g. CRG logic).
+        """
+        if not node.hier_children:
+            return ""
+        clock_assigns = []
+        parent_cd_by_name = {}
+        parent_cd_list = list(node.fragment.clock_domains)
+        for cd in parent_cd_list:
+            parent_cd_by_name[cd.name] = cd
+        canonical_clk = {}
+        canonical_rst = {}
+        for child in node.hier_children:
+            for cd in child.fragment.clock_domains:
+                if cd.name not in canonical_clk:
+                    canonical_clk[cd.name] = cd.clk
+                if cd.rst is not None and cd.name not in canonical_rst:
+                    canonical_rst[cd.name] = cd.rst
+        for child in node.hier_children:
+            for sig in child.external_signals:
+                cd_name = None
+                is_rst  = False
+                for cd in child.fragment.clock_domains:
+                    if sig is cd.clk:
+                        cd_name = cd.name; is_rst = False; break
+                    if sig is cd.rst:
+                        cd_name = cd.name; is_rst = True; break
+                if cd_name is None:
+                    continue
+                if sig not in child.port_directions:
+                    continue
+                if child.port_directions[sig] != "input":
+                    continue
+                source_sig = None
+                # Resolve ClockDomainsRenamer mappings on this module and
+                # its ancestors (e.g. write→usb inside an AsyncFIFO
+                # wrapped with {"write": "usb", "read": "sys"}).
+                mapped_cd_name = cd_name
+                for remap in getattr(node, "remap_chain", []):
+                    if mapped_cd_name in remap:
+                        mapped_cd_name = remap[mapped_cd_name]
+                # 1) Parent domain by (possibly remapped) name.
+                parent_cd = parent_cd_by_name.get(mapped_cd_name)
+                if parent_cd is not None:
+                    source_sig = parent_cd.rst if is_rst else parent_cd.clk
+                    if source_sig is sig:
+                        # The child's clock/reset port IS the parent's own
+                        # net (shared global ClockDomain object): the port
+                        # connection already ties them. Emitting any alias
+                        # here would add a second driver to a net the
+                        # parent may already drive (e.g. CRG logic).
+                        continue
+                # 2) Canonical child signal (sibling daisy-chain).
+                if source_sig is None:
+                    source_sig = (canonical_rst if is_rst
+                                  else canonical_clk).get(cd_name)
+                    if source_sig is sig:
+                        # This child provides the canonical net itself.
+                        if parent_cd is not None:
+                            # Same net as the parent's: nothing to do.
+                            continue
+                        # Parent has no domain with this name (e.g.
+                        # renamed domains write→usb): try the fallback.
+                        source_sig = None
+                # 3) Fallback: any parent clock domain, but only when the
+                #    parent has no domain with this name at all.
+                #    Handles renamed domains (write→usb, read→sys).
+                if source_sig is None and parent_cd is None and parent_cd_list:
+                    for pcd in parent_cd_list:
+                        source_sig = pcd.rst if is_rst else pcd.clk
+                        if source_sig is not None:
+                            break
+                if source_sig is None:
+                    continue
+                # Reject self-aliases (same name both sides).
+                if ctx.ns.get_name(source_sig) == ctx.ns.get_name(sig):
+                    continue
+                child_name  = ctx.ns.get_name(sig)
+                source_name = ctx.ns.get_name(source_sig)
+                # Ensure source signal is declared in this module.
+                if source_sig not in node.local_signals:
+                    node.local_signals.add(source_sig)
+                    ctx.all_signals.add(source_sig)
+                clock_assigns.append(
+                    f"assign {child_name} = {source_name};")
+        r = ""
+        if clock_assigns:
+            for a in sorted(clock_assigns):
+                r += a + "\n"
+            r += "\n"
+        return r
+
     verilog = ""
     verilog += _generate_banner(
         filename=ctx.name,
@@ -1549,92 +1659,7 @@ def _convert_hierarchical(f, ios, name, platform, special_overrides, attr_transl
         parts.append(_generate_submodule_instances(node, ctx.ns))
         parts.append(_generate_separator("Combinatorial Logic"))
         # ── Clock / Reset aliasing for child submodule ports ────
-        if node.hier_children:
-            clock_assigns = []
-            parent_cd_by_name = {}
-            parent_cd_list = list(node.fragment.clock_domains)
-            for cd in parent_cd_list:
-                parent_cd_by_name[cd.name] = cd
-            canonical_clk = {}
-            canonical_rst = {}
-            for child in node.hier_children:
-                for cd in child.fragment.clock_domains:
-                    if cd.name not in canonical_clk:
-                        canonical_clk[cd.name] = cd.clk
-                    if cd.rst is not None and cd.name not in canonical_rst:
-                        canonical_rst[cd.name] = cd.rst
-            for child in node.hier_children:
-                for sig in child.external_signals:
-                    cd_name = None
-                    is_rst  = False
-                    for cd in child.fragment.clock_domains:
-                        if sig is cd.clk:
-                            cd_name = cd.name; is_rst = False; break
-                        if sig is cd.rst:
-                            cd_name = cd.name; is_rst = True; break
-                    if cd_name is None:
-                        continue
-                    if sig not in child.port_directions:
-                        continue
-                    if child.port_directions[sig] != "input":
-                        continue
-                    source_sig = None
-                    # Resolve ClockDomainsRenamer mappings on this module and
-                    # its ancestors (e.g. write→usb inside an AsyncFIFO
-                    # wrapped with {"write": "usb", "read": "sys"}).
-                    mapped_cd_name = cd_name
-                    for remap in getattr(node, "remap_chain", []):
-                        if mapped_cd_name in remap:
-                            mapped_cd_name = remap[mapped_cd_name]
-                    # 1) Parent domain by (possibly remapped) name.
-                    parent_cd = parent_cd_by_name.get(mapped_cd_name)
-                    if parent_cd is not None:
-                        source_sig = parent_cd.rst if is_rst else parent_cd.clk
-                        if source_sig is sig:
-                            # The child's clock/reset port IS the parent's own
-                            # net (shared global ClockDomain object): the port
-                            # connection already ties them. Emitting any alias
-                            # here would add a second driver to a net the
-                            # parent may already drive (e.g. CRG logic).
-                            continue
-                    # 2) Canonical child signal (sibling daisy-chain).
-                    if source_sig is None:
-                        source_sig = (canonical_rst if is_rst
-                                      else canonical_clk).get(cd_name)
-                        if source_sig is sig:
-                            # This child provides the canonical net itself.
-                            if parent_cd is not None:
-                                # Same net as the parent's: nothing to do.
-                                continue
-                            # Parent has no domain with this name (e.g.
-                            # renamed domains write→usb): try the fallback.
-                            source_sig = None
-                    # 3) Fallback: any parent clock domain, but only when the
-                    #    parent has no domain with this name at all.
-                    #    Handles renamed domains (write→usb, read→sys).
-                    if source_sig is None and parent_cd is None and parent_cd_list:
-                        for pcd in parent_cd_list:
-                            source_sig = pcd.rst if is_rst else pcd.clk
-                            if source_sig is not None:
-                                break
-                    if source_sig is None:
-                        continue
-                    # Reject self-aliases (same name both sides).
-                    if ctx.ns.get_name(source_sig) == ctx.ns.get_name(sig):
-                        continue
-                    child_name  = ctx.ns.get_name(sig)
-                    source_name = ctx.ns.get_name(source_sig)
-                    # Ensure source signal is declared in this module.
-                    if source_sig not in node.local_signals:
-                        node.local_signals.add(source_sig)
-                        ctx.all_signals.add(source_sig)
-                    clock_assigns.append(
-                        f"assign {child_name} = {source_name};")
-            if clock_assigns:
-                for a in sorted(clock_assigns):
-                    parts.append(a + "\n")
-                parts.append("\n")
-        # ────────────────────────────────────────────────────────────
+        parts.append(_generate_clock_reset_aliases(node))
         parts.append(_generate_combinatorial_logic(node.fragment, ctx.ns, ctx.comb_cycle_policy))
         parts.append(_generate_separator("Synchronous Logic"))
         parts.append(_generate_synchronous_logic(node.fragment, ctx.ns))

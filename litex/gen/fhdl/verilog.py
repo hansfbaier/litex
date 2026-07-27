@@ -1555,6 +1555,14 @@ def _convert_hierarchical(f, ios, name, platform, special_overrides, attr_transl
                     continue
                 if child.port_directions[sig] != "input":
                     continue
+                if node.port_directions.get(sig) == "input":
+                    # The clock/reset net is also an input of THIS module:
+                    # it is driven from above, a local alias would be
+                    # illegal (assign to an input port) and duplicate the
+                    # driver. Aliases are emitted at the boundary module
+                    # where the net is a local wire (e.g. the renamer
+                    # boundary for renamed domains), not here.
+                    continue
                 source_sig = None
                 # Resolve ClockDomainsRenamer mappings on this module and
                 # its ancestors (e.g. write→usb inside an AsyncFIFO

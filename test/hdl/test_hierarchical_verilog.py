@@ -277,6 +277,47 @@ class _TwiceRegisteredTop(Module):
         self.comb += self.o.eq(0)
 
 
+class _StreamerGenLeaf(Module):
+    def __init__(self):
+        self.o = Signal(name="gen_o")
+        self.sync += self.o.eq(~self.o)
+
+
+class _StreamerMid(Module):
+    """Middle module using the 'sys' domain with a child that also uses
+    'sys' (mirrors PacketListStreamer + ConstantStreamGenerator inside the
+    ClockDomainsRenamer("usb")-wrapped AudioInit of the DECA audio design)."""
+    def __init__(self):
+        self.o = Signal(name="strm_o")
+        self.submodules.generator = _StreamerGenLeaf()
+        self.sync += self.o.eq(self.generator.o)
+
+
+class _RenamedInit(Module):
+    def __init__(self):
+        self.submodules.init_streamer = _StreamerMid()
+
+
+class _RenamedInitTop(Module):
+    """Top with a real 'usb' domain; a ClockDomainsRenamer("usb")-wrapped
+    subtree whose middle/leaf levels use 'sys'. The mapped alias must only
+    be emitted at the renamer boundary module — intermediate modules get
+    the net from above, so aliasing there would drive their own input
+    ports (Quartus: "value cannot be assigned to input")."""
+    def __init__(self):
+        self.clock_domains.cd_sys = ClockDomain("sys")
+        self.clock_domains.cd_usb = ClockDomain("usb")
+        self.pll_out = Signal(name="pll_out")
+        self.por     = Signal(name="por")
+        self.o       = Signal(name="o")
+        self.comb += [
+            self.cd_usb.clk.eq(self.pll_out),
+            self.cd_usb.rst.eq(self.por),
+        ]
+        self.submodules.audio_init = ClockDomainsRenamer("usb")(_RenamedInit())
+        self.comb += self.o.eq(self.audio_init.init_streamer.o)
+
+
 class TestHierarchicalVerilog(unittest.TestCase):
     @staticmethod
     def _module_body(verilog, name):
@@ -284,6 +325,21 @@ class TestHierarchicalVerilog(unittest.TestCase):
         if match is None:
             raise AssertionError(f"module {name} not found")
         return match.group(0)
+
+    def _assert_no_input_port_drivers(self, verilog):
+        # Structural invariant: no module assigns to one of its own input
+        # ports (illegal in Verilog: Quartus "value cannot be assigned to
+        # input ...").
+        for mod in re.finditer(r"module (\S+) \((.*?)\);(.*?)endmodule",
+                               verilog, re.S):
+            header = mod.group(2)
+            body   = mod.group(3)
+            inputs = set(re.findall(r"input\s+wire\s+(?:\[[^\]]*\]\s*)?(\w+)",
+                                    header))
+            for assign in re.finditer(r"assign (\w+) =", body):
+                self.assertNotIn(assign.group(1), inputs,
+                    f"module {mod.group(1)} assigns to its own input port "
+                    f"{assign.group(1)}")
 
     def test_hierarchy_golden_text(self):
         expected = "\n".join([
@@ -606,16 +662,43 @@ class TestHierarchicalVerilog(unittest.TestCase):
 
         # Structural invariant: no module assigns to one of its own input
         # ports anywhere in the output.
-        for mod in re.finditer(r"module (\S+) \((.*?)\);(.*?)endmodule",
-                               verilog, re.S):
-            header = mod.group(2)
-            body   = mod.group(3)
-            inputs = set(re.findall(r"input\s+wire\s+(?:\[[^\]]*\]\s*)?(\w+)",
-                                    header))
-            for assign in re.finditer(r"assign (\w+) =", body):
-                self.assertNotIn(assign.group(1), inputs,
-                    f"module {mod.group(1)} assigns to its own input port "
-                    f"{assign.group(1)}")
+        self._assert_no_input_port_drivers(verilog)
+
+    def test_hierarchical_renamed_subtree_aliases_only_at_boundary(self):
+        # Regression test (DECA audio --keep-hierarchy): inside a
+        # ClockDomainsRenamer("usb")-wrapped subtree, intermediate modules
+        # receive the renamed clock/reset nets via their input ports. The
+        # alias block must NOT fire at those levels: assigning to an input
+        # port is illegal. Aliases belong at the renamer boundary module
+        # only, where the phantom renamed-domain clocks are local wires.
+        top = _RenamedInitTop()
+        old_top = LiteXContext.top
+        try:
+            LiteXContext.top = top
+            verilog = convert(top, ios={top.pll_out, top.por, top.o}, name="top",
+                hierarchical={"enabled": True, "keep_hierarchy": True}).main_source
+        finally:
+            LiteXContext.top = old_top
+
+        # No module anywhere assigns to its own input port.
+        self._assert_no_input_port_drivers(verilog)
+
+        # The middle/leaf modules keep their (phantom-named) clock/reset
+        # input ports and contain no clock aliases at all.
+        for mod_name in ("top__audio_init__init_streamer",
+                         "top__audio_init__init_streamer__generator"):
+            mod = self._module_body(verilog, mod_name)
+            header = mod.split(");", 1)[0]
+            self.assertRegex(header, r"input\s+wire\s+sys_clk")
+            self.assertRegex(header, r"input\s+wire\s+sys_rst")
+            self.assertNotRegex(mod, r"assign \w+_clk = ")
+            self.assertNotRegex(mod, r"assign \w+_rst = ")
+
+        # The renamer boundary module drives the phantom sys-domain nets
+        # from the mapped usb domain.
+        init_module = self._module_body(verilog, "top__audio_init")
+        self.assertIn("assign sys_clk = usb_clk;", init_module)
+        self.assertIn("assign sys_rst = usb_rst;", init_module)
 
     def test_hierarchical_shared_alias_does_not_drop_inlined_logic(self):
         # Regression test: a module registered under two parents (shared

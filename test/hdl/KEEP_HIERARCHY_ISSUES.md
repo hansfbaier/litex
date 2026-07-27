@@ -250,6 +250,34 @@ are never emitted, so their ids must never filter anything.
 
 ---
 
+## Issue 7: Clock aliases driven onto a module's own input ports
+
+✅ **FIXED** (2026-07-27)
+
+**Symptom** (DECA UAC2 audio interface, `--keep-hierarchy`, Quartus):
+```
+Error (10231): value cannot be assigned to input "sys_clk"
+Error (10161): object "usb_rst" is not declared
+```
+
+**Root cause**: With the renamed-domain mapping (Issue 3) active, the alias block fired
+at *every* level of a renamed subtree. Inside `audio_init` (wrapped in
+`ClockDomainsRenamer("usb")`), the intermediate `init_streamer` module receives the
+phantom `sys` clock/reset nets via its input ports — driven from above by the alias at
+the renamer-boundary module. Emitting another alias at the intermediate level assigns to
+an input port (illegal) and duplicates the driver.
+
+**Fix**: `_generate_clock_reset_aliases` skips a child clock/reset port when the same
+signal is itself an input port of the module being emitted. Aliases are only emitted
+where the net is a local wire (the renamer-boundary module for renamed domains; the
+parent that owns the clock otherwise).
+
+**Regression test**: `test_hierarchical_renamed_subtree_aliases_only_at_boundary`
+(plus a reusable structural invariant `_assert_no_input_port_drivers` checking that no
+module in the whole output assigns to one of its own input ports).
+
+---
+
 ## Test Plan
 
 ### Test 1: Clock aliasing — parent has matching domain (Priority 1)

@@ -1674,6 +1674,32 @@ def _convert_hierarchical(f, ios, name, platform, special_overrides, attr_transl
         parts.append(_generate_separator("Combinatorial Logic"))
         # ── Clock / Reset aliasing for child submodule ports ────
         parts.append(_generate_clock_reset_aliases(node))
+        # ── Reset-only constant materialization ─────────────────
+        # Signals that are never assigned anywhere (e.g. Record fields with
+        # reset=1 like USB interface tx_data_pid) keep their reset value in
+        # flat conversion (`reg = <reset>`). Here they would otherwise
+        # become a floating chain of input ports with an undriven net,
+        # delivering GND instead of the reset constant to consumers. The
+        # topmost module passing the signal (not importing it as an input
+        # port itself) drives it with its reset value.
+        constant_assigns = []
+        for sig in sorted(interconnect_signals, key=lambda x: ctx.ns.get_name(x)):
+            if sig in node.local_targets:
+                continue
+            if sig in child_output_signals:
+                continue
+            if sig in ctx.root.subtree_targets:
+                continue
+            if sig in ctx.ios:
+                continue
+            if sig in node.external_signals and node.port_directions.get(sig) == "input":
+                continue
+            constant_assigns.append(
+                f"assign {ctx.ns.get_name(sig)} = {_generate_expression(ctx.ns, sig.reset)[0]};")
+        if constant_assigns:
+            for a in constant_assigns:
+                parts.append(a + "\n")
+            parts.append("\n")
         parts.append(_generate_combinatorial_logic(node.fragment, ctx.ns, ctx.comb_cycle_policy))
         parts.append(_generate_separator("Synchronous Logic"))
         parts.append(_generate_synchronous_logic(node.fragment, ctx.ns))

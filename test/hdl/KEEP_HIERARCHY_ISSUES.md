@@ -278,6 +278,34 @@ module in the whole output assigns to one of its own input ports).
 
 ---
 
+## Issue 8: Never-driven (reset-only constant) signals become floating input chains
+
+✅ **FIXED** (2026-07-27)
+
+**Symptom** (DECA UAC2 audio interface, `--keep-hierarchy`): device enumerates and i2c
+codec init works, but UAC2 class requests fail
+(`parse_audio_format_rates_v2v3(): unable to retrieve number of sample rates`) and no
+sound card is registered.
+
+**Root cause**: `UAC2RequestHandlers.interface.tx_data_pid` is a `Signal(reset=1)` that
+is *never assigned* — a reset-only constant (correct DATA1 PID for the handler's
+single-packet responses). Flat conversion emits it as `reg = 1'd1`. The hierarchical
+converter treated it as an ordinary signal referenced by the request mux, so it became
+an input port at every level with an undriven top-level wire: GND (DATA0) reached the
+mux instead of DATA1, and the host rejected every UAC2 response. The standard request
+handler was unaffected because it actively drives its `tx_data_pid` toggle.
+
+**Fix**: reset-only constant materialization in `_emit()`: for interconnect signals that
+are never targeted anywhere in the design, have no producer child and no local driver,
+and are not imported by the current module as an input port, the topmost module passing
+the signal drives it with its reset value (`assign sig = <reset>;`), matching flat
+semantics.
+
+**Regression test**: `test_hierarchical_never_driven_signal_gets_reset_constant`.
+Verified on DECA hardware: UAC2 device registers as a sound card, audio plays.
+
+---
+
 ## Test Plan
 
 ### Test 1: Clock aliasing — parent has matching domain (Priority 1)

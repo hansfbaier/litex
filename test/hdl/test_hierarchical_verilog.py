@@ -318,6 +318,28 @@ class _RenamedInitTop(Module):
         self.comb += self.o.eq(self.audio_init.init_streamer.o)
 
 
+class _ConstFieldProducer(Module):
+    """Owns a Record-like field that is never assigned (a reset-only
+    constant), mirroring UAC2RequestHandlers.interface.tx_data_pid."""
+    def __init__(self):
+        self.tx_data_pid = Signal(reset=1, name="tx_data_pid")
+
+
+class _ConstFieldConsumer(Module):
+    def __init__(self, sig):
+        self.o = Signal(name="cons_o")
+        self.comb += self.o.eq(sig)
+
+
+class _ConstFieldTop(Module):
+    def __init__(self):
+        self.o = Signal(name="o")
+        self.submodules.producer = _ConstFieldProducer()
+        self.submodules.consumer = _ConstFieldConsumer(
+            self.producer.tx_data_pid)
+        self.comb += self.o.eq(self.consumer.o)
+
+
 class TestHierarchicalVerilog(unittest.TestCase):
     @staticmethod
     def _module_body(verilog, name):
@@ -715,3 +737,34 @@ class TestHierarchicalVerilog(unittest.TestCase):
         self.assertIn("ser_i", verilog)
         self.assertIn("ser_o", verilog)
         self.assertRegex(verilog, r"ser_o <= ser_i")
+
+    def test_hierarchical_never_driven_signal_gets_reset_constant(self):
+        # Regression test (DECA UAC2 --keep-hierarchy): a signal that is
+        # never assigned anywhere (a reset-only constant, e.g.
+        # UAC2RequestHandlers.interface.tx_data_pid with reset=1) but is
+        # referenced across module boundaries became a floating chain of
+        # input ports with an undriven top-level wire (GND at the consumer
+        # instead of the reset constant). The topmost module passing the
+        # signal must materialize the reset value as a constant driver,
+        # matching flat conversion (`reg = <reset>` for untargeted signals).
+        top = _ConstFieldTop()
+        old_top = LiteXContext.top
+        try:
+            LiteXContext.top = top
+            verilog = convert(top, ios={top.o}, name="top",
+                hierarchical={"enabled": True, "keep_hierarchy": True}).main_source
+        finally:
+            LiteXContext.top = old_top
+
+        top_module      = self._module_body(verilog, "top")
+        consumer_module = self._module_body(verilog, "top__consumer")
+
+        # The consumer reads the signal through an input port...
+        self.assertRegex(consumer_module, r"input\s+wire\s+tx_data_pid")
+        self.assertIn(".tx_data_pid(tx_data_pid)", top_module)
+
+        # ...and the top materializes the reset value as a constant driver.
+        self.assertIn("assign tx_data_pid = 1'd1;", top_module)
+
+        # The consumer's logic uses the port.
+        self.assertIn("assign cons_o = tx_data_pid;", consumer_module)
